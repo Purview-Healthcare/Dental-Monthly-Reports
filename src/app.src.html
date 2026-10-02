@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Monthly EV Report Builder</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1b2430;--mut:#5b6677;--line:#dde2ea;--navy:#002060;--ok:#1a7f4b;--warn:#a15c00}
+@media(prefers-color-scheme:dark){:root{--bg:#12161c;--card:#1b212b;--ink:#e8ecf2;--mut:#9aa6b8;--line:#2e3745;--navy:#6b94e8;--ok:#4cc38a;--warn:#e0a23a}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,sans-serif}
+main{max-width:1040px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:22px;margin:0 0 4px}p.sub{color:var(--mut);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+h2{font-size:16px;margin:0 0 10px}h3{font-size:14px;margin:14px 0 6px}
+label.opt{display:flex;gap:8px;align-items:flex-start;margin:6px 0}
+.drop{border:2px dashed var(--line);border-radius:10px;padding:26px;text-align:center;color:var(--mut);cursor:pointer}
+.drop.on{border-color:var(--navy)}
+button{background:var(--navy);color:#fff;border:0;border-radius:8px;padding:9px 16px;font-size:14px;cursor:pointer}
+@media(prefers-color-scheme:dark){button{color:#0b1220}}
+button:disabled{opacity:.4;cursor:default}button.alt{background:transparent;color:var(--navy);border:1px solid var(--navy)}
+@media(prefers-color-scheme:dark){button.alt{color:var(--navy)}}
+select,input[type=text]{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)}
+table{border-collapse:collapse;width:100%;font-size:13px}th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+th{color:var(--mut);font-weight:600}.scroll{overflow-x:auto;max-height:300px;overflow-y:auto}
+.stats{display:flex;flex-wrap:wrap;gap:10px}.stat{border:1px solid var(--line);border-radius:8px;padding:6px 12px}.stat b{display:block;font-size:19px}
+.mut{color:var(--mut)}.warn{color:var(--warn)}.job{border-top:1px solid var(--line);padding:12px 0;display:grid;grid-template-columns:auto 1fr;gap:6px 12px;align-items:center}
+.job:first-of-type{border-top:0}.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+details{margin-top:8px}summary{cursor:pointer;color:var(--mut)}
+</style></head><body><main>
+<h1>Monthly EV Report Builder</h1>
+<p class="sub">One app for every monthly report: <b>Alpha Dental</b> (its own client), <b>Brambleton</b> and <b>Great Falls</b> (each Monthly + Urgent). Drop all the raw files together — the production workbook, the Alpha file, the Brambleton monthly file — and each sheet is matched to the right report. Runs entirely in your browser; nothing is uploaded.</p>
+
+<div class="card"><h2>1 · Raw files</h2>
+<div class="drop" id="drop">Click or drop the raw .xlsx files here (one or several)<br><span class="mut" id="fname"></span></div>
+<input type="file" id="file" accept=".xlsx" multiple hidden>
+<div id="slots" class="row" style="margin-top:12px"></div></div>
+
+<div class="card" id="jobsCard" hidden><h2>2 · Reports to build</h2><div id="jobs"></div>
+<h3>Options</h3>
+<label class="opt"><input type="checkbox" id="oSort" checked><span>Sort by patient name, then date</span></label>
+<label class="opt"><input type="checkbox" id="oFill"><span>Fill a missing Date from the DOW column <span class="mut">(off by default — such rows are listed for review instead)</span></span></label>
+<label class="opt"><input type="checkbox" id="oNoIns"><span>Alpha Dental only: force <b>N/A</b> on “No insurance” rows</span></label>
+<label class="opt"><input type="checkbox" id="oTerm"><span>Alpha Dental only: force Status = <b>Not Eligible</b> when Form Type is Terminated</span></label>
+<label class="opt"><input type="checkbox" id="oUid"><span>Add the <b>Unique ID</b> column with duplicate highlighting</span></label>
+<label class="opt"><input type="checkbox" id="oRev"><span>Add a <b>Needs Review</b> sheet to the report file <span class="mut">(leave off for client copies — review items are always shown below)</span></span></label>
+<p><button id="go">Build reports</button></p></div>
+<div id="out"></div>
+</main>
+<script>/*EXCELJS*/</script>
+<script>
+const FT={RV:'Recently Verified',SF:'Short Form',FF:'Full Form',TERM:'Terminated',NA:'N/A'};
+const CANON={form:{'FULL FORM':FT.FF,'SHORT FORM':FT.SF,'RECENTLY VERIFIED':FT.RV,'TERMINATED':FT.TERM,'N/A':FT.NA,'NA':FT.NA},
+ status:{'ELIGIBLE':'Eligible','NOT ELIGIBLE':'Not Eligible','N/A':'N/A','NA':'N/A'},
+ pt:{'RECALL':'Recall','NEW':'New','N/A':'N/A','NA':'N/A'},ins:{'COMMERCIAL':'Commercial'}};
+const COMMON={sort:'nameDate',dedupe:[FT.FF,FT.SF],notesRules:true,autoStatus:true,naStatus:true,noIns:false,
+  snap:[FT.FF,FT.SF,FT.RV,FT.TERM,FT.NA],typeCols:{form:'Form Type',status:'Status',pt:'Patient Type',insurance:'Insurance'}};
+const LAYOUTS={
+ alpha:{...COMMON,id:'alpha',name:'Alpha layout',detect:h=>h.has('pt name'),
+  cols:['App ID','App Date','App Time','Pt Name','Primary Insurance','Form Type','Status','Plan Update','Pt Type'],
+  f:{date:'App Date',name:'Pt Name',ins:'Primary Insurance',form:'Form Type',status:'Status',plan:'Plan Update',id:'App ID',time:'App Time'},
+  typeCols:{form:'Form Type',status:'Status',plan:'Plan Update',pt:'Pt Type'},
+  notes:['Notes','App Notes'],ver:null,dow:null,dedupe:[FT.SF],notesRules:false,autoStatus:false,naStatus:false,noIns:true,
+  snap:[FT.RV,FT.SF,FT.NA,FT.TERM],left:['Pt Name','Primary Insurance']},
+ monthly:{...COMMON,id:'monthly',name:'Monthly layout',detect:h=>h.has('full name')&&h.has('pins_name')&&h.has('lname'),
+  cols:['DATE','ID','Time','LNAME','FNAME','Full Name','PIns_Name','Insurance','Form Type','Status','Patient Type'],
+  f:{date:'DATE',name:'Full Name',ins:'PIns_Name',form:'Form Type',status:'Status',id:'ID',time:'Time'},
+  notes:['NOTES'],ver:"Verifier's Name",dow:'DOW',left:[]},
+ urgent:{...COMMON,id:'urgent',name:'Urgent layout',detect:h=>h.has('account no.')&&h.has('pins_name'),
+  cols:['Date','Account No.','L Name','F Name','Full Name','PIns_Name','Insurance','Form Type','Status','Patient Type'],
+  f:{date:'Date',name:'Full Name',ins:'PIns_Name',form:'Form Type',status:'Status',id:'Account No.'},
+  notes:['NOTES'],ver:"Verifier's Name",dow:'DOW',left:[]}
+};
+const CLIENTS=['Alpha Dental','Brambleton','Great Falls'];
+const DEFAULT_EXCLUDE={};
+const norm=s=>String(s??'').replace(/[ \t\r\n]+/g,' ').replace(/\s+/g,' ').trim().toUpperCase();
+const clean=s=>typeof s==='string'?s.replace(/[ \t\r\n]+/g,' ').replace(/\s+/g,' ').trim():s;
+const skey=s=>norm(s).replace(/['`’-]/g,'');
+const txt=v=>v&&typeof v==='object'&&v.richText?v.richText.map(r=>r.text).join(''):(v&&typeof v==='object'&&'result' in v?v.result:v);
+const isoDay=d=>d instanceof Date?d.toISOString().slice(0,10):String(d);
+const noIns=s=>/^NO INS/.test(norm(s));
+const cmp=(a,b)=>a<b?-1:a>b?1:0;
+const dt=v=>v instanceof Date?v.getTime():Infinity;
+const RX_TERM=/TERMINAT|TERMIANT|TERMINTED|NO ACTIV\w* (PLAN|POLICY|COVERAGE)|(DOES NOT|DOESN'?T) HAVE (A )?CURRENT COVERAGE|NO CURRENT COVERAGE|COVERAGE (HAS )?(ENDED|CANCEL)|POLICY (CANCEL|ENDED)/i;
+const RX_NA=/NOT FOUND|NOT IN PMS|CAN ?NOT FIND|COULD ?N[O']?T FIND|UNABLE TO (FIND|CONNECT|LOCATE)|DID ?N'?T FIND|NO (DENTAL )?(BENEFITS?|BENIFITS?|DENEFITS?|COVERAGE)|NO DENTAL|PEDIATRIC|OUT OF NETWORK|NOT COVERED/i;
+const RX_FUT=/ELIGIB\w*\s+(ON|STARTS?|BEGINS?|EFFECTIVE|FROM)/i;
+function noteDate(s){const m=String(s).match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return null;let y=+m[3];if(y<100)y+=2000;return new Date(Date.UTC(y,+m[1]-1,+m[2]))}
+const $=id=>document.getElementById(id);
+let jobs=[],results=[];
+
+$('drop').onclick=()=>$('file').click();
+$('drop').ondragover=e=>{e.preventDefault();$('drop').classList.add('on')};
+$('drop').ondragleave=()=>$('drop').classList.remove('on');
+$('drop').ondrop=e=>{e.preventDefault();$('drop').classList.remove('on');loadAll([...e.dataTransfer.files])};
+$('file').onchange=e=>{loadAll([...e.target.files]);e.target.value=''};
+function guessClient(...names){const t=names.join(' ').toUpperCase();
+  if(/(^|[^A-Z])GF([^A-Z]|$)|GREAT ?FALLS/.test(t))return 'Great Falls';if(/(^|[^A-Z])BM([^A-Z]|$)|BRAMBLETON/.test(t))return 'Brambleton';if(/ALPHA/.test(t))return 'Alpha Dental';return ''}
+function readSheet(ws){
+  const hdr={},src={};ws.getRow(1).eachCell((c,i)=>{const t=String(txt(c.value)??'');hdr[t.trim().toLowerCase()]=i;src[t.trim().toLowerCase()]=t});
+  const H=new Set(Object.keys(hdr));const L=Object.values(LAYOUTS).find(l=>l.detect(H));if(!L)return null;
+  const miss=L.cols.filter(k=>!hdr[k.toLowerCase()]);if(miss.length)return{error:'missing columns: '+miss.join(', ')};
+  const rows=[];
+  ws.eachRow((row,n)=>{if(n===1)return;
+    const o={n,v:{},fmt:{}};
+    L.cols.forEach(k=>{const c=row.getCell(hdr[k.toLowerCase()]);o.v[k]=clean(txt(c.value))??'';o.fmt[k]=c.numFmt});
+    o.notes=L.notes.map(k=>hdr[k.toLowerCase()]?txt(row.getCell(hdr[k.toLowerCase()]).value):'').map(x=>clean(String(x??''))).filter(Boolean).join(' || ');
+    o.ver=L.ver&&hdr[L.ver.toLowerCase()]?clean(String(txt(row.getCell(hdr[L.ver.toLowerCase()]).value)??'')):'';
+    o.dow=L.dow&&hdr[L.dow.toLowerCase()]?txt(row.getCell(hdr[L.dow.toLowerCase()]).value):null;
+    // Full Name is a CONCAT formula in the raw files; rebuild it when the cached result is unreadable
+    const ln=o.v.LNAME??o.v['L Name'],fn=o.v.FNAME??o.v['F Name'];
+    if((typeof o.v[L.f.name]!=='string'||o.v[L.f.name]==='')&&(ln||fn)&&L.f.name==='Full Name')o.v[L.f.name]=clean(String(ln??''))+','+clean(String(fn??''));
+    if(typeof o.v[L.f.id]==='string'&&/^-?\d+$/.test(o.v[L.f.id]))o.v[L.f.id]=Number(o.v[L.f.id]);
+    const idc=o.v[L.f.id],nm=o.v[L.f.name];
+    if((idc===''||idc==null)&&(nm===''||nm==null))return;rows.push(o)});
+  return{L,rows,heads:L.cols.map(k=>src[k.toLowerCase()])};
+}
+async function loadAll(files){
+  files=files.filter(f=>/\.xlsx$/i.test(f.name));if(!files.length)return;
+  $('out').innerHTML='';results=[];
+  for(const f of files)await load(f);
+  $('fname').textContent=[...new Set(jobs.map(j=>j.file))].join(' · ');renderJobs();
+}
+async function load(f){
+  const wb=new ExcelJS.Workbook();
+  try{await wb.xlsx.load(await f.arrayBuffer())}catch(e){jobs.push({file:f.name,sheet:'(file)',error:'could not be read'});return}
+  const sheets=wb.worksheets.filter(w=>w.name.toUpperCase()!=='SNAP'&&w.name.toUpperCase()!=='SANP');
+  for(const ws of sheets){const r=readSheet(ws);if(!r)continue;
+    if(r.error){jobs.push({file:f.name,sheet:ws.name,error:r.error});continue}
+    const client=r.L.id==='alpha'?'Alpha Dental':guessClient(ws.name,f.name)||'';
+    jobs.push({file:f.name,sheet:ws.name,...r,client,on:true,exclude:''});}
+}
+const SLOTS=[['Alpha Dental','monthly'],['Brambleton','monthly'],['Brambleton','urgent'],['Great Falls','monthly'],['Great Falls','urgent']];
+const kindOf=j=>j.L.id==='urgent'?'urgent':'monthly';
+function renderJobs(){
+  $('jobsCard').hidden=!jobs.length;
+  const live=jobs.filter(j=>!j.error&&j.on);
+  $('slots').innerHTML=SLOTS.map(([c,k])=>{const n=live.filter(j=>j.client===c&&kindOf(j)===k).length;
+    return `<span class="stat" style="${n===1?'':'border-color:var(--warn)'}"><b>${n===1?'✓':n>1?n+'×':'—'}</b>${c} · ${k==='urgent'?'Urgent':'Monthly'}</span>`}).join('');
+  $('jobs').innerHTML=jobs.map((j,i)=>j.error?`<div class="job"><span></span><span class="warn">${j.file} · “${j.sheet}” skipped — ${j.error}</span></div>`:
+   `<div class="job"><input type="checkbox" ${j.on?'checked':''} data-i="${i}" data-k="on">
+    <div><b>${j.sheet}</b> <span class="mut">· ${j.file} · ${j.L.name} · ${j.rows.length} rows</span>
+    <div class="row" style="margin-top:6px"><label>Client <select data-i="${i}" data-k="client">${(j.L.id==='alpha'?['Alpha Dental']:['','Brambleton','Great Falls']).map(c=>`<option ${c===j.client?'selected':''}>${c}</option>`).join('')}</select></label>
+    <span class="mut">${j.L.id==='alpha'?'Alpha Dental report':(kindOf(j)==='urgent'?'Urgent report':'Monthly report')}</span>
+    ${j.L.ver?`<label>Exclude verifiers <input type="text" size="18" value="${j.exclude}" data-i="${i}" data-k="exclude" placeholder="leave empty to keep all"></label><span class="mut">${verSummary(j)}</span>`:''}</div></div></div>`).join('');
+  $('jobs').querySelectorAll('[data-k]').forEach(el=>el.onchange=()=>{const j=jobs[+el.dataset.i],k=el.dataset.k;
+    if(k==='on')j.on=el.checked;else j[k]=el.value;renderJobs()});
+}
+function verSummary(j){const c={};j.rows.forEach(r=>{const k=r.ver.trim().toLowerCase()||'(blank)';c[k]=(c[k]||0)+1});return Object.entries(c).sort((a,b)=>b[1]-a[1]).map(([k,v])=>k+' '+v).join(' · ')}
+
+$('go').onclick=async()=>{
+  const opt={sort:$('oSort').checked,fill:$('oFill').checked,ins:$('oNoIns').checked,term:$('oTerm').checked,uid:$('oUid').checked,rev:$('oRev').checked};
+  results=[];$('out').innerHTML='';
+  const on=jobs.filter(j=>!j.error&&j.on),seenSlot={};for(const j of on){const k=j.client+'|'+kindOf(j);if(seenSlot[k]){alert('Two sheets are selected for '+j.client+' '+kindOf(j)+'. Untick one.');return}seenSlot[k]=1}
+  const bad=jobs.filter(j=>!j.error&&j.on&&!j.client);if(bad.length){alert('Pick a client for: '+bad.map(j=>j.sheet).join(', '));return}
+  for(const j of jobs.filter(j=>!j.error&&j.on)){const r=process(j,opt);r.buf=await makeFile(r,opt);results.push(r)}
+  renderResults();window.__done=true;
+};
+
+function process(j,opt){
+  const L=j.L,F=L.f,T=L.typeCols,changes=[],review=[],removed=[],excluded=[];
+  const excl=j.exclude.split(',').map(s=>norm(s)).filter(Boolean);
+  let rows=j.rows.map(r=>({n:r.n,fmt:r.fmt,notes:r.notes,ver:r.ver,dow:r.dow,v:{...r.v}}));
+  const g=(r,k)=>r.v[k], idOf=r=>g(r,F.id);
+  const log=(r,field,a,b,why)=>changes.push({r,field,a,b,why});
+  const rev=(r,why)=>{const e=review.find(x=>x.r===r);if(!e)review.push({r,why});else if(!e.why.includes(why))e.why+='; '+why};
+  if(excl.length)rows=rows.filter(r=>{if(excl.some(e=>norm(r.ver).includes(e))){excluded.push(r);return false}return true});
+  if(L.noIns)rows=rows.filter(r=>{if(/\d/.test(String(g(r,F.name)))){removed.push(r);return false}return true});
+  for(const r of rows){
+    // dates
+    let d=g(r,F.date);
+    if(typeof d==='string'&&d!==''){const m=d.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);if(m){let y=+m[3];if(y<100)y+=2000;d=new Date(Date.UTC(y,+m[1]-1,+m[2]));r.v[F.date]=d}}
+    if(!(d instanceof Date)){
+      if(opt.fill&&r.dow instanceof Date){log(r,F.date,'(blank)',isoDay(r.dow),'Date filled from DOW');r.v[F.date]=r.dow}
+      else rev(r,'Date is missing'+(r.dow instanceof Date?' (DOW says '+isoDay(r.dow)+')':''))}
+    // time -> serial fraction
+    if(F.time){let t=g(r,F.time),fr=null;
+      if(t instanceof Date)fr=(((t.getTime()%864e5)+864e5)%864e5)/864e5;
+      else if(typeof t==='number')fr=t>=1?t%1:t;
+      else if(typeof t==='string'){const m=t.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);if(m)fr=((+m[1])*3600+(+m[2])*60+(+(m[3]||0)))/86400}
+      if(fr!==null)r.v[F.time]=fr;else if(t!==''&&t!=null)rev(r,'Time not understood: '+t)}
+    // canonical casing
+    for(const [k,map] of Object.entries(CANON)){const col=k==='ins'?T.insurance:T[k];if(!col||!(col in r.v))continue;
+      const raw=String(r.v[col]),n=norm(raw);if(n===''&&raw==='')continue;
+      if(map[n]){if(map[n]!==raw)r.v[col]=map[n]}
+      else if(k!=='ins')rev(r,'Unrecognised '+col+': '+raw)}
+    const aid=idOf(r);if(typeof aid==='number'&&aid<=0)rev(r,'ID / Account No. is '+aid);
+  }
+  // notes + status rules
+  for(const r of rows){
+    const Fm=T.form,St=T.status,ft0=g(r,Fm),apt=g(r,F.date);
+    const setForm=(v,why)=>{if(g(r,Fm)!==v){log(r,Fm,g(r,Fm),v,why);r.v[Fm]=v}};
+    const setSt=(v,why)=>{if(g(r,St)!==v){log(r,St,g(r,St),v,why);r.v[St]=v}};
+    if(L.notesRules&&r.notes){
+      const term=RX_TERM.test(r.notes),fut=RX_FUT.test(r.notes),na=RX_NA.test(r.notes);
+      if(term){const nd=noteDate(r.notes);
+        if(nd&&apt instanceof Date&&nd>apt)rev(r,'Notes say terminated on a date after the appointment — plan was active: '+r.notes.slice(0,90));
+        else{setForm(FT.TERM,'Notes: plan terminated / no active plan');}}
+      else if(fut){const nd=noteDate(r.notes);
+        if(nd&&apt instanceof Date&&nd>apt)setForm(FT.TERM,'Notes: coverage starts after the appointment');
+        else rev(r,'Notes mention an eligibility date — check: '+r.notes.slice(0,90))}
+      else if(na){if(g(r,Fm)===FT.TERM)rev(r,'Marked Terminated but notes say: '+r.notes.slice(0,90));else setForm(FT.NA,'Notes: patient / plan / benefits not found or not usable')}
+      else rev(r,'Notes need reading: '+r.notes.slice(0,110));
+    }
+    if(L.naStatus&&g(r,St)==='N/A'&&g(r,Fm)!==FT.NA&&g(r,Fm)!==FT.TERM)setForm(FT.NA,'Status is N/A → Form Type N/A');
+    if(L.autoStatus||opt.term){if(g(r,Fm)===FT.TERM)setSt('Not Eligible','Terminated → Not Eligible');}
+    if(L.autoStatus&&g(r,Fm)===FT.NA)setSt('N/A','Form Type N/A → Status N/A');
+  }
+  // alpha: no-insurance rows
+  if(L.noIns)for(const r of rows){const T2=L.typeCols,ins=g(r,F.ins);
+    if(noIns(ins)&&!(g(r,T2.form)==='N/A'&&g(r,T2.status)==='N/A'&&g(r,T2.plan)==='N/A')){
+      if(opt.ins){for(const c of[T2.form,T2.status,T2.plan])if(g(r,c)!=='N/A'){log(r,c,g(r,c),'N/A','No insurance → N/A');r.v[c]='N/A'}}
+      else rev(r,'No insurance but marked '+g(r,T2.form)+' / '+g(r,T2.status))}
+    if(g(r,T2.form)===FT.TERM&&g(r,T2.status)!=='Not Eligible')rev(r,'Terminated but Status = '+g(r,T2.status));
+    if(g(r,T2.form)!==FT.TERM&&g(r,T2.status)==='Not Eligible')rev(r,'Not Eligible but Form Type = '+g(r,T2.form));
+    if(g(r,T2.form)==='N/A'&&!noIns(ins))rev(r,'Form Type N/A but insurance is '+String(ins).slice(0,40));
+  }
+  // one Short Form / Full Form per patient + insurance per month
+  const seen=new Map();
+  for(const r of rows.slice().sort((a,b)=>(dt(g(a,F.date))-dt(g(b,F.date)))||a.n-b.n)){
+    const ft=g(r,T.form);if(!L.dedupe.includes(ft))continue;
+    const k=skey(g(r,F.name))+'|'+norm(g(r,F.ins))+'|'+ft;
+    if(seen.has(k)){const p=seen.get(k),same=isoDay(g(p,F.date))===isoDay(g(r,F.date));
+      log(r,T.form,ft,FT.RV,(same?'2nd ':'Another ')+ft+(same?' — same patient, same day':' — already done earlier this month'));r.v[T.form]=FT.RV}
+    else seen.set(k,r)}
+  if(opt.sort)rows.sort((a,b)=>cmp(skey(g(a,F.name)),skey(g(b,F.name)))||(dt(g(a,F.date))-dt(g(b,F.date)))||(a.n-b.n));
+  const kind=kindOf(j);
+  const valid=rows.map(r=>g(r,F.date)).filter(d=>d instanceof Date);
+  const month=valid.length?new Date(Math.min(...valid)).toLocaleString('en-US',{month:'long',timeZone:'UTC'}):'Report';
+  const client=(j.client||'Client').replace(/ /g,'_');
+  const name=(kind==='urgent'?'Monthly_Urgent_EV_Report_':'Monthly_EV_Report_')+client+'_-_'+month+'.xlsx';
+  return{j,L,rows,changes,review,removed,excluded,name};
+}
+const CL=i=>{let s='';for(i;i>0;i=Math.floor((i-1)/26))s=String.fromCharCode(65+((i-1)%26))+s;return s};
+const BORDER={top:{style:'thin',color:{argb:'FF000000'}},left:{style:'thin',color:{argb:'FF000000'}},bottom:{style:'thin',color:{argb:'FF000000'}},right:{style:'thin',color:{argb:'FF000000'}}};
+const FONT={name:'Aptos Narrow',size:11};
+function countsOf(r){const c={};r.rows.forEach(x=>{const k=x.v[r.L.typeCols.form];c[k]=(c[k]||0)+1});return c}
+async function makeFile(r,opt){
+  const L=r.L,F=L.f,rows=r.rows,N=rows.length+1,wb=new ExcelJS.Workbook();
+  const sn=wb.addWorksheet('SNAP'),ws=wb.addWorksheet('Total Data');
+  const heads=r.j.heads.slice();if(opt.uid)heads.push('Unique ID');
+  const ci=k=>L.cols.indexOf(k)+1,cD=ci(F.date),cN=ci(F.name),cI=ci(F.ins),cF=ci(L.typeCols.form),cU=heads.length;
+  ws.addRow(heads);
+  rows.forEach((x,i)=>{const n=i+2,row=ws.addRow(L.cols.map(k=>x.v[k]===''?null:x.v[k]));
+    L.cols.forEach((k,jx)=>{const c=row.getCell(jx+1);
+      if(k===F.date&&x.v[k] instanceof Date)c.numFmt='mm-dd-yy';
+      else if(F.time&&k===F.time&&typeof x.v[k]==='number')c.numFmt='h:mm:ss';
+      else if(x.fmt[k]&&x.fmt[k]!=='General'&&typeof x.v[k]!=='string')c.numFmt=x.fmt[k]});
+    if(opt.uid)row.getCell(cU).value={formula:`TEXT(${CL(cD)}${n},"m/d/yyyy")&"|"&UPPER(TRIM(${CL(cN)}${n}))&"|"&UPPER(TRIM(${CL(cI)}${n}))&"|"&${CL(cF)}${n}`}});
+  // uniform styling on every cell: font, size, borders, alignment
+  for(let rr=1;rr<=N;rr++)for(let cc=1;cc<=heads.length;cc++){const c=ws.getCell(rr,cc),left=rr>1&&L.left.includes(heads[cc-1]);
+    c.border=BORDER;c.alignment={horizontal:left?'left':'center',vertical:'middle'};
+    if(rr===1){c.font={...FONT,bold:true,color:{argb:'FFFFFFFF'}};c.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF002060'}}}
+    else c.font={...FONT,color:{argb:'FF000000'}}}
+  heads.forEach((h,i)=>{let w=h.length+4;for(const x of rows){const v=x.v[L.cols[i]];const s=v instanceof Date?'00-00-00':typeof v==='number'&&L.cols[i]===F.time?'00:00:00':String(v??'');if(s.length+2>w)w=s.length+2}
+    ws.getColumn(i+1).width=Math.min(Math.max(w,8),60)});
+  ws.views=[{state:'frozen',ySplit:1}];ws.autoFilter={from:'A1',to:{row:1,column:heads.length}};
+  if(opt.uid){ws.getColumn(cU).width=60;ws.addConditionalFormatting({ref:`${CL(cU)}2:${CL(cU)}${N}`,rules:[{type:'expression',priority:1,formulae:[`COUNTIF($${CL(cU)}$2:$${CL(cU)}$${N},${CL(cU)}2)>1`],style:{fill:{type:'pattern',pattern:'solid',bgColor:{argb:'FFFFC7CE'}},font:{color:{argb:'FF9C0006'}}}}]})}
+  // SNAP
+  const c=countsOf(r),rng=`'Total Data'!$${CL(cF)}$2:$${CL(cF)}$${N}`;
+  const keys=[...L.snap,...Object.keys(c).filter(k=>!L.snap.includes(k)&&k!==''&&k!=null)];
+  sn.getCell('B3').value='Form Type';sn.getCell('C3').value='Form#';
+  keys.forEach((k,i)=>{sn.getCell(4+i,2).value=k;sn.getCell(4+i,3).value={formula:`COUNTIF(${rng},B${4+i})`,result:c[k]||0}});
+  const t=4+keys.length;sn.getCell(t,2).value='Grand Total';sn.getCell(t,3).value={formula:`SUM(C4:C${t-1})`,result:rows.length};
+  for(let rr=3;rr<=t;rr++)for(let cc=2;cc<=3;cc++){const x=sn.getCell(rr,cc);x.font=FONT;x.border=BORDER;x.alignment={horizontal:cc===2?'left':'center'}}
+  sn.getColumn(2).width=22;sn.getColumn(3).width=10;
+  if(opt.rev){const rv=wb.addWorksheet('Needs Review');rv.addRow(['Source row','ID','Date','Patient','Insurance','Form Type','Status','Why','Notes']);
+    r.review.forEach(x=>rv.addRow([x.r.n,x.r.v[F.id],x.r.v[F.date],x.r.v[F.name],x.r.v[F.ins],x.r.v[L.typeCols.form],x.r.v[L.typeCols.status],x.why,x.r.notes]));
+    for(let rr=1;rr<=r.review.length+1;rr++)for(let cc=1;cc<=9;cc++){const x=rv.getCell(rr,cc);x.font=rr===1?{...FONT,bold:true,color:{argb:'FFFFFFFF'}}:FONT;x.border=BORDER;if(rr===1)x.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF002060'}}}
+    [10,12,11,26,40,16,12,50,70].forEach((w,i)=>rv.getColumn(i+1).width=w);rv.getColumn(3).numFmt='mm-dd-yy'}
+  return await wb.xlsx.writeBuffer();
+}
+const fmtD=d=>d instanceof Date?d.toISOString().slice(0,10):d;
+function tbl(head,body){return '<div class="scroll"><table><tr>'+head.map(h=>'<th>'+h+'</th>').join('')+'</tr>'+(body.length?body.map(r=>'<tr>'+r.map(c=>'<td>'+String(c??'').replace(/</g,'&lt;')+'</td>').join('')+'</tr>').join(''):'<tr><td class="mut" colspan="'+head.length+'">None</td></tr>')+'</table></div>'}
+function renderResults(){
+  $('out').innerHTML=(results.length>1?'<p><button id="dlAll">Download all '+results.length+' reports</button></p>':'')+results.map((r,i)=>{const L=r.L,F=L.f,c=countsOf(r);
+    return `<div class="card"><h2>${r.name}</h2><div class="stats">${[['Rows',r.rows.length],...Object.entries(c),['Auto changes',r.changes.length],['To review',r.review.length],['Excluded',r.excluded.length+r.removed.length]].map(([k,v])=>`<div class="stat"><b>${v}</b>${k}</div>`).join('')}</div>
+    <p><button data-dl="${i}">Download report</button> <button class="alt" data-csv="${i}">Download change log (.csv)</button></p>
+    <details><summary>Changes made automatically (${r.changes.length})</summary>${tbl(['Source row','ID','Date','Patient','Field','Old → New','Why'],r.changes.map(x=>[x.r.n,x.r.v[F.id],fmtD(x.r.v[F.date]),x.r.v[F.name],x.field,x.a+' → '+x.b,x.why]))}</details>
+    <details open><summary>Needs review — read the notes (${r.review.length})</summary>${tbl(['Source row','ID','Date','Patient','Form / Status','Why','Notes'],r.review.map(x=>[x.r.n,x.r.v[F.id],fmtD(x.r.v[F.date]),x.r.v[F.name],x.r.v[L.typeCols.form]+' / '+x.r.v[L.typeCols.status],x.why,x.r.notes.slice(0,140)]))}</details>
+    ${r.excluded.length||r.removed.length?`<details><summary>Rows left out (${r.excluded.length+r.removed.length})</summary>${tbl(['Source row','ID','Patient','Reason'],[...r.excluded.map(x=>[x.n,x.v[F.id],x.v[F.name],'Excluded verifier: '+x.ver]),...r.removed.map(x=>[x.n,x.v[F.id],x.v[F.name],'Placeholder name (contains digits)'])])}</details>`:''}</div>`}).join('');
+  if($('dlAll'))$('dlAll').onclick=async()=>{for(const r of results){save(r.buf,r.name,'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');await new Promise(z=>setTimeout(z,500))}};
+  $('out').querySelectorAll('[data-dl]').forEach(b=>b.onclick=()=>save(results[+b.dataset.dl].buf,results[+b.dataset.dl].name,'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'));
+  $('out').querySelectorAll('[data-csv]').forEach(b=>b.onclick=()=>{const r=results[+b.dataset.csv],F=r.L.f,q=v=>'"'+String(v??'').replace(/"/g,'""')+'"';
+    const lines=[['type','source row','id','date','patient','field','old','new','why / notes'].map(q).join(',')];
+    r.changes.forEach(x=>lines.push(['change',x.r.n,x.r.v[F.id],fmtD(x.r.v[F.date]),x.r.v[F.name],x.field,x.a,x.b,x.why].map(q).join(',')));
+    r.review.forEach(x=>lines.push(['review',x.r.n,x.r.v[F.id],fmtD(x.r.v[F.date]),x.r.v[F.name],'','','',x.why+(x.r.notes?' | '+x.r.notes:'')].map(q).join(',')));
+    save(new TextEncoder().encode(lines.join('\n')),r.name.replace('.xlsx','_change_log.csv'),'text/csv')});
+}
+function save(buf,name,type){const u=URL.createObjectURL(new Blob([buf],{type}));const a=document.createElement('a');a.href=u;a.download=name;a.click()}
+</script></body></html>

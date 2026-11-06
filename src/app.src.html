@@ -160,7 +160,7 @@ function process(j,opt){
   const log=(r,field,a,b,why)=>changes.push({r,field,a,b,why});
   const rev=(r,why)=>{const e=review.find(x=>x.r===r);if(!e)review.push({r,why});else if(!e.why.includes(why))e.why+='; '+why};
   if(excl.length)rows=rows.filter(r=>{if(excl.some(e=>norm(r.ver).includes(e))){excluded.push(r);return false}return true});
-  if(L.noIns)rows=rows.filter(r=>{if(/\d/.test(String(g(r,F.name)))){removed.push(r);return false}return true});
+  if(L.noIns)for(const r of rows)if(/\d/.test(String(g(r,F.name))))rev(r,'Placeholder-looking name (contains digits) — kept in the report');
   for(const r of rows){
     // dates
     let d=g(r,F.date);

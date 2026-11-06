@@ -18,3 +18,7 @@ All processing happens in the browser; no file is uploaded anywhere. Do not comm
 ## Development
 `index.html` is generated: `src/app.src.html` + ExcelJS (inlined so the app works offline).
 Run `npm i exceljs && node src/build.js` from the repo root (adjust paths in `build.js`).
+
+## Decisions
+- **Terminated but Eligible (Alpha Dental):** the app does not change the Status. The row is listed under **Needs review** so a person reads the notes. Ticking *force Not Eligible* in the app overrides this.
+- **Nothing is deleted:** every row in the raw file appears in the report. Placeholder-looking names (digits in the name) are kept and flagged under **Needs review**.

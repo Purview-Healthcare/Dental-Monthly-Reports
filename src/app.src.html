@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Monthly EV Report Builder</title>
+<title>Dental Reports</title>
 <style>
 :root{--bg:#f6f7f9;--card:#fff;--ink:#1b2430;--mut:#5b6677;--line:#dde2ea;--navy:#002060;--ok:#1a7f4b;--warn:#a15c00}
 @media(prefers-color-scheme:dark){:root{--bg:#12161c;--card:#1b212b;--ink:#e8ecf2;--mut:#9aa6b8;--line:#2e3745;--navy:#6b94e8;--ok:#4cc38a;--warn:#e0a23a}}
@@ -23,8 +23,14 @@ th{color:var(--mut);font-weight:600}.scroll{overflow-x:auto;max-height:300px;ove
 .mut{color:var(--mut)}.warn{color:var(--warn)}.job{border-top:1px solid var(--line);padding:12px 0;display:grid;grid-template-columns:auto 1fr;gap:6px 12px;align-items:center}
 .job:first-of-type{border-top:0}.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
 details{margin-top:8px}summary{cursor:pointer;color:var(--mut)}
+.tabs{display:flex;gap:8px;margin:10px 0 16px;border-bottom:1px solid var(--line)}
+.tab{background:transparent;color:var(--mut);border:0;border-bottom:3px solid transparent;border-radius:0;padding:8px 14px;font-size:15px}
+.tab.on{color:var(--navy);border-bottom-color:var(--navy);font-weight:600}
+@media(prefers-color-scheme:dark){.tab{color:var(--mut)}.tab.on{color:var(--navy)}}
 </style></head><body><main>
-<h1>Monthly EV Report Builder</h1>
+<h1>Dental Reports</h1>
+<div class="tabs"><button class="tab on" data-tab="Monthly">Monthly reports</button><button class="tab" data-tab="Daily">Daily appointments</button></div>
+<section id="tabMonthly">
 <p class="sub">One app for every monthly report: <b>Alpha Dental</b> (its own client), <b>Brambleton</b> and <b>Great Falls</b> (each Monthly + Urgent). Drop all the raw files together — the production workbook, the Alpha file, the Brambleton monthly file — and each sheet is matched to the right report. Runs entirely in your browser; nothing is uploaded.</p>
 
 <div class="card"><h2>1 · Raw files</h2>
@@ -42,6 +48,16 @@ details{margin-top:8px}summary{cursor:pointer;color:var(--mut)}
 <label class="opt"><input type="checkbox" id="oRev"><span>Add a <b>Needs Review</b> sheet to the report file <span class="mut">(leave off for client copies — review items are always shown below)</span></span></label>
 <p><button id="go">Build reports</button></p></div>
 <div id="out"></div>
+</section>
+<section id="tabDaily" hidden>
+<p class="sub">Adds each patient's <b>subscriber name and insurance details</b> to the appointment list, ready for verification. Drop the patient-details export and the appointment report(s) together (CSV or Excel) — the app works out which is which and matches them. Runs entirely in your browser; nothing is uploaded.</p>
+<div class="card"><h2>1 · Files</h2>
+<div class="drop" id="dDrop">Click or drop the patient-details file and the appointment file(s) here (.csv or .xlsx)</div>
+<input type="file" id="dFile" accept=".csv,.xlsx" multiple hidden>
+<div id="dFiles" style="margin-top:10px"></div>
+<p><button id="dGo" disabled>Match and build</button> <button class="alt" id="dClear">Clear files</button></p></div>
+<div id="dOut"></div>
+</section>
 </main>
 <script>/*EXCELJS*/</script>
 <script>
@@ -283,4 +299,156 @@ function renderResults(){
     save(new TextEncoder().encode(lines.join('\n')),r.name.replace('.xlsx','_change_log.csv'),'text/csv')});
 }
 function save(buf,name,type){const u=URL.createObjectURL(new Blob([buf],{type}));const a=document.createElement('a');a.href=u;a.download=name;a.click()}
+</script>
+<script>
+/* ---------- tabs ---------- */
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===b));
+  ['Monthly','Daily'].forEach(t=>document.getElementById('tab'+t).hidden=t!==b.dataset.tab)});
+
+/* ---------- Daily appointments: add subscriber + insurance details ---------- */
+(function(){
+const el=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+const nk=s=>String(s??'').toLowerCase().replace(/[^a-z0-9]/g,'');
+const digits=s=>String(s??'').replace(/\D/g,'');
+const blank=v=>v==null||String(v).trim()===''||String(v).trim()==='-';
+let files=[],outs=[];
+
+function parseCSV(text){
+  if(text.charCodeAt(0)===0xFEFF)text=text.slice(1);
+  const rows=[];let row=[],f='',q=false;
+  for(let i=0;i<text.length;i++){const c=text[i];
+    if(q){if(c==='"'){if(text[i+1]==='"'){f+='"';i++}else q=false}else f+=c}
+    else if(c==='"')q=true;
+    else if(c===','){row.push(f);f=''}
+    else if(c==='\n'||c==='\r'){if(c==='\r'&&text[i+1]==='\n')i++;row.push(f);f='';rows.push(row);row=[]}
+    else f+=c}
+  if(f!==''||row.length){row.push(f);rows.push(row)}
+  return rows;
+}
+function cellText(v){
+  if(v==null)return '';
+  if(v instanceof Date)return isNaN(v)?'':(v.getUTCMonth()+1)+'/'+v.getUTCDate()+'/'+v.getUTCFullYear();
+  if(typeof v==='object'){if(v.richText)return v.richText.map(r=>r.text).join('');if('result' in v)return cellText(v.result);if(v.text!=null)return String(v.text);return ''}
+  return String(v);
+}
+async function readTables(file){
+  if(/\.csv$/i.test(file.name))return [{sheet:'',rows:parseCSV(await file.text())}];
+  const wb=new ExcelJS.Workbook();await wb.xlsx.load(await file.arrayBuffer());
+  return wb.worksheets.map(ws=>{const rows=[];ws.eachRow({includeEmpty:true},(row,n)=>{const a=[];for(let c=1;c<=ws.columnCount;c++)a.push(cellText(row.getCell(c).value));rows[n-1]=a});
+    for(let i=0;i<rows.length;i++)if(!rows[i])rows[i]=[];return{sheet:ws.name,rows}});
+}
+// normalise a date to m/d/yyyy so the two files compare equal
+function dkey(s){s=String(s??'').trim();let m=s.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})/);
+  if(m){let y=+m[3];if(y<100)y+=2000;return (+m[1])+'/'+(+m[2])+'/'+y}
+  m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);if(m)return (+m[2])+'/'+(+m[3])+'/'+(+m[1]);return s}
+const dnum=k=>{const m=String(k).match(/^(\d+)\/(\d+)\/(\d+)$/);return m?Date.UTC(+m[3],+m[1]-1,+m[2]):NaN};
+function classify(t){
+  for(let i=0;i<Math.min(t.rows.length,15);i++){const h=(t.rows[i]||[]).map(x=>String(x).trim().toLowerCase());
+    const has=n=>h.includes(n),idx=n=>h.indexOf(n);
+    if(has('subscriber name')&&h.some(x=>x.includes('insurance carrier')))return{kind:'patient',hdr:i,h,idx};
+    if(has('first name')&&has('last name')&&h.some(x=>x.startsWith('appt date')||x==='appointment date'))return{kind:'appt',hdr:i,h,idx}}
+  return null;
+}
+function loadPatient(t,c){
+  const col=(...names)=>{for(const n of names){const i=c.h.findIndex(x=>x===n||x.startsWith(n));if(i>=0)return i}return -1};
+  const I={state:col('insurance state'),ord:col('insurance ordinal'),carrier:c.h.findIndex(x=>x.includes('insurance carrier')),sub:col('subscriber name'),elig:col('eligibility verified status'),
+    fn:col('patient first name'),ln:col('patient last name'),ph:col('patient phone'),em:col('patient email'),date:col('appointment date display'),link:col('patient name (with link)'),status:col('appointment status')};
+  const out=[];
+  for(let r=c.hdr+1;r<t.rows.length;r++){const a=t.rows[r]||[];const g=i=>i>=0?String(a[i]??'').trim():'';
+    let fn=g(I.fn),ln=g(I.ln);const link=g(I.link),pid=(link.match(/patients\/(\d+)/)||[])[1]||'';
+    if(!fn&&!ln){const cap=(link.match(/\{caption\}(.*?)\{\/caption\}/)||[])[1]||'';if(!cap)continue;const p=cap.trim().split(/\s+/);fn=p[0];ln=p.slice(1).join(' ')}
+    out.push({fn,ln,name:nk(fn)+'|'+nk(ln),date:dkey(g(I.date)),ph:digits(g(I.ph)),em:g(I.em).toLowerCase(),pid,
+      state:g(I.state),ord:g(I.ord),carrier:g(I.carrier),sub:g(I.sub),elig:g(I.elig)})}
+  return out;
+}
+const isSecondary=p=>/second|tert/i.test(p.ord);
+function pick(cands,date){ // prefer the row for the same date, else the closest date
+  if(!cands.length)return null;const same=cands.filter(p=>p.date===date);if(same.length)return{p:same[0],same:true};
+  const d=dnum(date);let best=cands[0];if(!isNaN(d))best=cands.slice().sort((a,b)=>Math.abs(dnum(a.date)-d)-Math.abs(dnum(b.date)-d))[0];return{p:best,same:false}}
+function match(a,P){
+  const prim=P.filter(p=>!isSecondary(p));
+  let c=prim.filter(p=>p.name===a.name),how='';
+  if(c.length){const pids=new Set(c.map(p=>p.pid||p.ph));const r=pick(c,a.date);
+    how=r.same?'Matched (name + date)':'Matched by name (date differs: '+(r.p.date||'none')+')';
+    if(pids.size>1&&!r.same)how='Check: several patients share this name';
+    return{p:r.p,how}}
+  if(a.ph){c=prim.filter(p=>p.ph===a.ph&&nk(p.fn)===nk(a.fn));if(c.length){const r=pick(c,a.date);return{p:r.p,how:'Matched by phone + first name (last name differs: '+r.p.ln+')'}}}
+  if(a.em&&a.em!=='-'){c=prim.filter(p=>p.em===a.em&&nk(p.fn)===nk(a.fn));if(c.length){const r=pick(c,a.date);return{p:r.p,how:'Matched by email + first name (last name differs: '+r.p.ln+')'}}}
+  return{p:null,how:'Not found in patient file'};
+}
+const ADD=['Subscriber Name','Primary Insurance Carrier','Insurance State','Eligibility Verified Status','Match'];
+
+async function addFiles(list){
+  for(const f of list){if(!/\.(csv|xlsx)$/i.test(f.name))continue;
+    let tables;try{tables=await readTables(f)}catch(e){files.push({name:f.name,kind:'error',note:'could not be read'});continue}
+    let any=false;
+    for(const t of tables){const c=classify(t);if(!c)continue;any=true;
+      const label=f.name+(t.sheet&&tables.length>1?' · '+t.sheet:'');
+      if(c.kind==='patient')files.push({name:label,file:f.name,kind:'patient',rows:loadPatient(t,c)});
+      else files.push({name:label,file:f.name,kind:'appt',t,c,count:t.rows.slice(c.hdr+1).filter(r=>r&&r.some(x=>String(x).trim()!=='')).length})}
+    if(!any)files.push({name:f.name,kind:'error',note:'not recognised as a patient-details or appointment file'})}
+  render();
+}
+function render(){
+  const np=files.filter(f=>f.kind==='patient').length,na=files.filter(f=>f.kind==='appt').length;
+  el('dFiles').innerHTML=files.map(f=>`<div class="job"><span>${f.kind==='patient'?'👤':f.kind==='appt'?'📅':'⚠️'}</span><div><b>${esc(f.name)}</b> <span class="${f.kind==='error'?'warn':'mut'}">· ${f.kind==='patient'?'Patient details · '+f.rows.length+' rows':f.kind==='appt'?'Appointments · '+f.count+' rows':esc(f.note)}</span></div></div>`).join('')
+    +(files.length&&(!np||!na)?`<p class="warn">Still needed: ${!np?'a patient-details file (with Subscriber Name and Insurance Carrier columns)':''}${!np&&!na?' and ':''}${!na?'an appointment file':''}.</p>`:'');
+  el('dGo').disabled=!(np&&na);
+}
+el('dDrop').onclick=()=>el('dFile').click();
+el('dDrop').ondragover=e=>{e.preventDefault();el('dDrop').classList.add('on')};
+el('dDrop').ondragleave=()=>el('dDrop').classList.remove('on');
+el('dDrop').ondrop=e=>{e.preventDefault();el('dDrop').classList.remove('on');addFiles([...e.dataTransfer.files])};
+el('dFile').onchange=e=>{addFiles([...e.target.files]);e.target.value=''};
+el('dClear').onclick=()=>{files=[];outs=[];el('dOut').innerHTML='';render();window.__dailyDone=false};
+
+el('dGo').onclick=async()=>{
+  const P=files.filter(f=>f.kind==='patient').flatMap(f=>f.rows);outs=[];
+  for(const f of files.filter(f=>f.kind==='appt')){
+    const {t,c}=f,H=t.rows[c.hdr].map(x=>String(x).trim());let w=H.length;while(w>0&&H[w-1]==='')w--;
+    const iF=c.idx('first name'),iL=c.idx('last name'),iD=c.h.findIndex(x=>x.startsWith('appt date')||x==='appointment date'),iP=c.h.findIndex(x=>x.startsWith('phone')),iE=c.h.findIndex(x=>x.startsWith('email')),iN=c.h.findIndex(x=>x.startsWith('next appt'));
+    const at=Math.max(iF,iL)+1; // insurance columns go right after the patient's name
+    const head=[...H.slice(0,at),...ADD,...H.slice(at,w)],body=[],stat={};
+    for(let r=c.hdr+1;r<t.rows.length;r++){const a=(t.rows[r]||[]).slice(0,w).map(x=>String(x??'').trim());
+      if(!a.some(x=>x!==''))continue;while(a.length<w)a.push('');
+      [iD,iN].forEach(i=>{if(i>=0&&i<w&&a[i]&&a[i]!=='-')a[i]=dkey(a[i])});
+      const m=match({fn:a[iF],name:nk(a[iF])+'|'+nk(a[iL]),date:iD>=0?a[iD]:'',ph:iP>=0?digits(a[iP]):'',em:iE>=0?a[iE].toLowerCase():''},P);
+      const p=m.p,noIns=p&&blank(p.carrier);
+      const add=p?[blank(p.sub)?'':p.sub,noIns?'No insurance on file':p.carrier,p.state,p.elig,m.how]:['','','','',m.how];
+      const key=!p?'Not found':noIns?'No insurance on file':m.how.startsWith('Matched (')?'Matched':'Matched — check';
+      stat[key]=(stat[key]||0)+1;
+      body.push({cells:[...a.slice(0,at),...add,...a.slice(at)],key})}
+    const base=f.file.replace(/\.(csv|xlsx)$/i,'')+(t.sheet&&t.sheet!=='Sheet1'&&files.filter(x=>x.file===f.file&&x.kind==='appt').length>1?'_'+t.sheet:'');
+    outs.push({name:base+'_with_insurance',label:f.name,head,body,stat,at,title:(t.rows.slice(0,c.hdr).map(r=>(r||[]).find(x=>String(x).trim()!=='')||'').filter(Boolean))});
+  }
+  for(const o of outs)o.buf=await toXlsx(o);
+  show();window.__dailyDone=true;
+};
+async function toXlsx(o){
+  const wb=new ExcelJS.Workbook(),ws=wb.addWorksheet('Appointments');
+  ws.addRow(o.head);o.body.forEach(b=>ws.addRow(b.cells));
+  const B={style:'thin',color:{argb:'FF000000'}},border={top:B,left:B,bottom:B,right:B},n=o.body.length+1;
+  for(let r=1;r<=n;r++)for(let c=1;c<=o.head.length;c++){const x=ws.getCell(r,c),added=c>o.at&&c<=o.at+ADD.length;
+    x.border=border;x.alignment={horizontal:'center',vertical:'middle'};
+    if(r===1){x.font={name:'Aptos Narrow',size:11,bold:true,color:{argb:'FFFFFFFF'}};x.fill={type:'pattern',pattern:'solid',fgColor:{argb:added?'FF1F6F43':'FF002060'}}}
+    else{x.font={name:'Aptos Narrow',size:11,color:{argb:'FF000000'}};const k=o.body[r-2].key;
+      if(added&&k!=='Matched')x.fill={type:'pattern',pattern:'solid',fgColor:{argb:k==='Not found'?'FFFFC7CE':k==='No insurance on file'?'FFEDEDED':'FFFFEB9C'}}}}
+  o.head.forEach((h,i)=>{let w=h.length+4;for(const b of o.body){const l=String(b.cells[i]??'').length+2;if(l>w)w=l}ws.getColumn(i+1).width=Math.min(Math.max(w,8),45)});
+  ws.views=[{state:'frozen',ySplit:1}];ws.autoFilter={from:'A1',to:{row:1,column:o.head.length}};
+  return await wb.xlsx.writeBuffer();
+}
+function toCsv(o){const q=v=>{v=String(v??'');return /[",\n\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v};
+  return '﻿'+[o.head,...o.body.map(b=>b.cells)].map(r=>r.map(q).join(',')).join('\r\n')}
+function show(){
+  el('dOut').innerHTML=outs.map((o,i)=>{const iM=o.at+ADD.length-1,prob=o.body.filter(b=>b.key!=='Matched'&&b.key!=='No insurance on file');
+    return `<div class="card"><h2>${esc(o.name)}.xlsx</h2><p class="mut">${esc(o.title.join(' · '))}</p>
+    <div class="stats">${[['Appointments',o.body.length],...['Matched','Matched — check','No insurance on file','Not found'].filter(k=>o.stat[k]).map(k=>[k,o.stat[k]])].map(([k,v])=>`<div class="stat"><b>${v}</b>${k}</div>`).join('')}</div>
+    <p><button data-x="${i}">Download Excel</button> <button class="alt" data-c="${i}">Download CSV</button></p>
+    <details ${prob.length?'open':''}><summary>Rows to check (${prob.length})</summary><div class="scroll"><table><tr><th>First Name</th><th>Last Name</th><th>Subscriber</th><th>Insurance</th><th>Match</th></tr>${prob.length?prob.map(b=>`<tr><td>${esc(b.cells[o.at-2]??'')}</td><td>${esc(b.cells[o.at-1])}</td><td>${esc(b.cells[o.at])}</td><td>${esc(b.cells[o.at+1])}</td><td>${esc(b.cells[iM])}</td></tr>`).join(''):'<tr><td class="mut" colspan="5">None</td></tr>'}</table></div></details></div>`}).join('');
+  el('dOut').querySelectorAll('[data-x]').forEach(b=>b.onclick=()=>{const o=outs[+b.dataset.x];save(o.buf,o.name+'.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')});
+  el('dOut').querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>{const o=outs[+b.dataset.c];save(new TextEncoder().encode(toCsv(o)),o.name+'.csv','text/csv')});
+}
+window.__dailyOuts=()=>outs;
+})();
 </script></body></html>

@@ -22,3 +22,10 @@ Run `npm i exceljs && node src/build.js` from the repo root (adjust paths in `bu
 ## Decisions
 - **Terminated but Eligible (Alpha Dental):** the app does not change the Status. The row is listed under **Needs review** so a person reads the notes. Ticking *force Not Eligible* in the app overrides this.
 - **Nothing is deleted:** every row in the raw file appears in the report. Placeholder-looking names (digits in the name) are kept and flagged under **Needs review**.
+
+## Daily appointments tab
+Adds each patient's subscriber name and insurance details to the appointment list.
+Drop the patient-details export and one or more appointment reports (CSV or Excel); the app tells them apart by their columns.
+Each appointment file gets its own download (Excel or CSV) with Subscriber Name, Primary Insurance Carrier, Insurance State,
+Eligibility Verified Status and a Match column added after the patient's name.
+Matching is by first + last name and appointment date, then name only, then phone or email with first name. Unmatched rows are kept and marked.

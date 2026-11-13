@@ -373,6 +373,10 @@ function match(a,P){
     how=r.same?'Matched (name + date)':'Matched by name (date differs: '+(r.p.date||'none')+')';
     if(pids.size>1&&!r.same)how='Check: several patients share this name';
     return{p:r.p,how}}
+  { // same last name, first name written longer/shorter (e.g. "Cheryl Lynne" vs "Cheryl"), confirmed by phone or email
+    const ln=a.name.split('|')[1],fa=nk(a.fn);
+    c=prim.filter(p=>nk(p.ln)===ln&&fa&&nk(p.fn)&&(fa.startsWith(nk(p.fn))||nk(p.fn).startsWith(fa))&&((a.ph&&p.ph===a.ph)||(a.em&&a.em!=='-'&&p.em===a.em)));
+    if(c.length){const r=pick(c,a.date);return{p:r.p,how:'Matched by last name + phone/email (first name differs: '+r.p.fn+')'}}}
   if(a.ph){c=prim.filter(p=>p.ph===a.ph&&nk(p.fn)===nk(a.fn));if(c.length){const r=pick(c,a.date);return{p:r.p,how:'Matched by phone + first name (last name differs: '+r.p.ln+')'}}}
   if(a.em&&a.em!=='-'){c=prim.filter(p=>p.em===a.em&&nk(p.fn)===nk(a.fn));if(c.length){const r=pick(c,a.date);return{p:r.p,how:'Matched by email + first name (last name differs: '+r.p.ln+')'}}}
   return{p:null,how:'Not found in patient file'};
